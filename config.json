@@ -1,0 +1,19 @@
+{
+  "appsToClose": [
+    "notepad.exe",
+    "calc.exe",
+    "mspaint.exe",
+    "SnippingTool.exe"
+  ],
+  "startupApps": [
+    {
+      "name": "DSM News Scraper Beta",
+      "path": "C:\\Users\\Test\\Desktop\\DSM Projects\\DSM Newscraper Latest\\dsm\\maltese-news-scraper\\node_modules\\electron\\dist\\electron.exe",
+      "args": "C:\\Users\\Test\\Desktop\\DSM Projects\\DSM Newscraper Latest\\dsm\\maltese-news-scraper"
+    }
+  ],
+  "autoOptimizeHour": 3,
+  "autoScanDay": "sunday",
+  "maxPerformance": true,
+  "deviceName": "DSM Main Office"
+}

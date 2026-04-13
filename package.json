@@ -1,0 +1,32 @@
+{
+  "name": "dsm-optimizer",
+  "version": "1.2.0",
+  "description": "DSM Windows Optimizer — system monitoring, optimization & call-home",
+  "main": "main.js",
+  "author": "DSM Communications",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable",
+    "build-installer": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.dsm.optimizer",
+    "productName": "DSM Optimizer",
+    "win": {
+      "target": "portable",
+      "icon": "icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "portable": {
+      "artifactName": "DSM-Optimizer-${version}.exe"
+    },
+    "files": [
+      "**/*",
+      "!logs/**"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  }
+}
