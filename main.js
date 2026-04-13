@@ -1097,6 +1097,12 @@ const apiServer = httpServer.createServer(async (req, res) => {
         return jsonRes(res, 200, checkins);
       }
 
+      // Get all optimizers from cloud relay
+      if (pathname === '/api/cloud-relay') {
+        const data = await cloudRelayPull();
+        return jsonRes(res, 200, data);
+      }
+
     // 404
     jsonRes(res, 404, {
       error: 'Not found',
@@ -1159,10 +1165,78 @@ try {
   logToFile('Firewall rule may already exist or failed');
 }
 
-// ── Call Home — periodic health beacon to DSM Monitor ──────────────────────
+// ── Cloud Relay — push/pull health via jsonblob.com (no port forwarding) ────
 // ══════════════════════════════════════════════════════════════════════════════
 
-const CALL_HOME_INTERVAL = 60000; // every 60 seconds
+const CLOUD_RELAY_URL = 'https://jsonblob.com/api/jsonBlob/019d882d-4b23-714f-aa07-8ae615277b49';
+const CLOUD_RELAY_INTERVAL = 60000; // push every 60s
+
+async function cloudRelayPush() {
+  try {
+    const health = await getHealthData();
+    health.publicIP = await getPublicIP();
+    health.timestamp = new Date().toISOString();
+    const id = health.deviceName || 'unknown';
+
+    // GET current relay data
+    const current = await new Promise((resolve) => {
+      require('https').get(CLOUD_RELAY_URL, { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }, (res) => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ optimizers: {} }); } });
+      }).on('error', () => resolve({ optimizers: {} }));
+    });
+
+    // Update our entry
+    if (!current.optimizers) current.optimizers = {};
+    current.optimizers[id] = health;
+
+    // PUT updated data back
+    const payload = JSON.stringify(current);
+    const url = new URL(CLOUD_RELAY_URL);
+    const req = require('https').request({
+      hostname: url.hostname,
+      path: url.pathname,
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 10000,
+    }, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          logToFile('Cloud relay push OK (' + id + ')');
+        } else {
+          logToFile('Cloud relay push: ' + res.statusCode, 'ERROR');
+        }
+      });
+    });
+    req.on('error', (err) => logToFile('Cloud relay push failed: ' + err.message, 'ERROR'));
+    req.on('timeout', () => req.destroy());
+    req.write(payload);
+    req.end();
+  } catch (err) {
+    logToFile('Cloud relay error: ' + err.message, 'ERROR');
+  }
+}
+
+async function cloudRelayPull() {
+  return new Promise((resolve) => {
+    require('https').get(CLOUD_RELAY_URL, { headers: { 'Accept': 'application/json' } }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ optimizers: {} }); } });
+    }).on('error', () => resolve({ optimizers: {} }));
+  });
+}
+
+// Start cloud relay push loop
+setInterval(cloudRelayPush, CLOUD_RELAY_INTERVAL);
+setTimeout(cloudRelayPush, 5000);
+
+// ── Call Home (legacy) ─────────────────────────────────────────────────────
+
+const CALL_HOME_INTERVAL = 60000;
 const CALL_HOME_FILE = path.join(__dirname, 'callhome.json');
 
 function loadCallHomeConfig() {
