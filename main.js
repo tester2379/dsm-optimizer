@@ -33,8 +33,22 @@ if (!_isAdmin && !process.argv.includes('--no-admin')) {
   }
 }
 
+// ── Persistent data dir (survives portable exe restarts) ────────────────────
+const DATA_DIR = path.join(process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'), 'DSM Optimizer');
+try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+
+// Copy bundled config to persistent dir on first run
+const PERSISTENT_CONFIG = path.join(DATA_DIR, 'config.json');
+const PERSISTENT_CALLHOME = path.join(DATA_DIR, 'callhome.json');
+if (!fs.existsSync(PERSISTENT_CONFIG)) {
+  try { fs.copyFileSync(PERSISTENT_CONFIG, PERSISTENT_CONFIG); } catch {}
+}
+if (!fs.existsSync(PERSISTENT_CALLHOME) && fs.existsSync(path.join(__dirname, 'callhome.json'))) {
+  try { fs.copyFileSync(path.join(__dirname, 'callhome.json'), PERSISTENT_CALLHOME); } catch {}
+}
+
 // ── Full logging — catches everything ───────────────────────────────────────
-const LOG_DIR = path.join(__dirname, 'logs');
+const LOG_DIR = path.join(DATA_DIR, 'logs');
 try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
 function logToFile(msg, level = 'INFO') {
@@ -345,11 +359,11 @@ ipcMain.handle('run-optimizer', async (_, command) => {
 });
 
 ipcMain.handle('get-config', () => {
-  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch { return {}; }
 });
 
 ipcMain.handle('save-config', (_, config) => {
-  fs.writeFileSync(path.join(__dirname, 'config.json'), JSON.stringify(config, null, 2));
+  fs.writeFileSync(PERSISTENT_CONFIG, JSON.stringify(config, null, 2));
   return true;
 });
 
@@ -689,7 +703,7 @@ ipcMain.handle('apply-max-performance', async () => {
 
 function applyMaxPerformanceOnStartup() {
   try {
-    const configPath = path.join(__dirname, 'config.json');
+    const configPath = PERSISTENT_CONFIG;
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (config.maxPerformance) {
       logToFile('Max Performance is ON — applying on startup...');
@@ -807,7 +821,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
         try {
           info.uptimeHours = Math.round(require('os').uptime() / 3600);
         } catch { info.uptimeHours = 0; }
-        const configPath = path.join(__dirname, 'config.json');
+        const configPath = PERSISTENT_CONFIG;
         let config = {};
         try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
         info.maxPerformance = config.maxPerformance || false;
@@ -979,7 +993,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
       }
       if (pathname === '/api/performance-mode') {
         const body = await parseJsonBody(req);
-        const configPath = path.join(__dirname, 'config.json');
+        const configPath = PERSISTENT_CONFIG;
         try {
           const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
           config.maxPerformance = body.enabled !== undefined ? !!body.enabled : !config.maxPerformance;
@@ -1028,7 +1042,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
       if (pathname === '/api/device-name') {
         const body = await parseJsonBody(req);
         if (!body.name) return jsonRes(res, 400, { error: 'name required' });
-        const configPath = path.join(__dirname, 'config.json');
+        const configPath = PERSISTENT_CONFIG;
         try {
           const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
           config.deviceName = body.name;
@@ -1080,7 +1094,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
       // Receive check-in from remote optimizers
       if (pathname === '/api/optimizer/checkin') {
         const body = await parseJsonBody(req);
-        const checkinFile = path.join(__dirname, 'checkins.json');
+        const checkinFile = path.join(DATA_DIR, 'checkins.json');
         let checkins = {};
         try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch {}
         const id = body.callHomeId || body.deviceName || 'unknown';
@@ -1091,7 +1105,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
 
       // Get all check-ins from remote optimizers
       if (pathname === '/api/optimizer/checkins') {
-        const checkinFile = path.join(__dirname, 'checkins.json');
+        const checkinFile = path.join(DATA_DIR, 'checkins.json');
         let checkins = {};
         try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch {}
         return jsonRes(res, 200, checkins);
@@ -1237,7 +1251,7 @@ setTimeout(cloudRelayPush, 5000);
 // ── Call Home (legacy) ─────────────────────────────────────────────────────
 
 const CALL_HOME_INTERVAL = 60000;
-const CALL_HOME_FILE = path.join(__dirname, 'callhome.json');
+const CALL_HOME_FILE = PERSISTENT_CALLHOME;
 
 function loadCallHomeConfig() {
   try { return JSON.parse(fs.readFileSync(CALL_HOME_FILE, 'utf8')); } catch { return null; }
@@ -1274,7 +1288,7 @@ async function getHealthData() {
   } catch { info.uptimeHours = 0; }
 
   let config = {};
-  try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch {}
+  try { config = JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch {}
   info.deviceName = config.deviceName || require('os').hostname();
   info.version = '1.2.0';
   info.maxPerformance = config.maxPerformance || false;
