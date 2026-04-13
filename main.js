@@ -766,35 +766,55 @@ const apiServer = httpServer.createServer(async (req, res) => {
     if (req.method === 'GET') {
       if (pathname === '/api/health') {
         const info = {};
+        // CPU — try PowerShell first, fallback to wmic
         try {
-          const cpuLoad = await run('wmic cpu get LoadPercentage /value');
-          info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
-        } catch { info.cpu = 0; }
+          const cpuOut = await run('powershell -Command "(Get-CimInstance Win32_Processor).LoadPercentage"');
+          info.cpu = parseInt(cpuOut) || 0;
+        } catch {
+          try {
+            const cpuLoad = await run('wmic cpu get LoadPercentage /value');
+            info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
+          } catch { info.cpu = 0; }
+        }
+        // RAM — PowerShell with fallback
         try {
-          const ramFree = await run('wmic OS get FreePhysicalMemory /value');
-          const ramTotal = await run('wmic OS get TotalVisibleMemorySize /value');
-          const free = parseInt((ramFree.match(/=(\d+)/) || [])[1] || '0');
-          const total = parseInt((ramTotal.match(/=(\d+)/) || [])[1] || '1');
-          info.ramUsedPct = Math.round((1 - free / total) * 100);
-          info.ramFreeGB = (free / 1024 / 1024).toFixed(1);
-          info.ramTotalGB = (total / 1024 / 1024).toFixed(1);
-        } catch {}
+          const ramOut = await run('powershell -Command "$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = [math]::Round((1-$os.FreePhysicalMemory/$os.TotalVisibleMemorySize)*100); Write-Output \\"$used|$free|$total\\""');
+          const [usedPct, freeGB, totalGB] = ramOut.split('|');
+          info.ramUsedPct = parseInt(usedPct) || 0;
+          info.ramFreeGB = freeGB || '0';
+          info.ramTotalGB = totalGB || '0';
+        } catch {
+          try {
+            const ramFree = await run('wmic OS get FreePhysicalMemory /value');
+            const ramTotal = await run('wmic OS get TotalVisibleMemorySize /value');
+            const free = parseInt((ramFree.match(/=(\d+)/) || [])[1] || '0');
+            const total = parseInt((ramTotal.match(/=(\d+)/) || [])[1] || '1');
+            info.ramUsedPct = Math.round((1 - free / total) * 100);
+            info.ramFreeGB = (free / 1024 / 1024).toFixed(1);
+            info.ramTotalGB = (total / 1024 / 1024).toFixed(1);
+          } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
+        }
+        // Disk — PowerShell with fallback
         try {
-          const diskOut = await run('wmic logicaldisk where "DeviceID=\'C:\'" get Size,FreeSpace /value');
-          const dfree = parseInt((diskOut.match(/FreeSpace=(\d+)/) || [])[1] || '0');
-          const dtotal = parseInt((diskOut.match(/Size=(\d+)/) || [])[1] || '1');
-          info.diskUsedPct = Math.round((1 - dfree / dtotal) * 100);
-          info.diskFreeGB = (dfree / 1024 / 1024 / 1024).toFixed(1);
-          info.diskTotalGB = (dtotal / 1024 / 1024 / 1024).toFixed(1);
-        } catch {}
+          const diskOut = await run('powershell -Command "$d = Get-CimInstance Win32_LogicalDisk -Filter \\"DeviceID=\'C:\'\\"; $total = [math]::Round($d.Size/1GB,1); $free = [math]::Round($d.FreeSpace/1GB,1); $used = [math]::Round((1-$d.FreeSpace/$d.Size)*100); Write-Output \\"$used|$free|$total\\""');
+          const [dUsed, dFree, dTotal] = diskOut.split('|');
+          info.diskUsedPct = parseInt(dUsed) || 0;
+          info.diskFreeGB = dFree || '0';
+          info.diskTotalGB = dTotal || '0';
+        } catch {
+          try {
+            const diskOut = await run('wmic logicaldisk where "DeviceID=\'C:\'" get Size,FreeSpace /value');
+            const dfree = parseInt((diskOut.match(/FreeSpace=(\d+)/) || [])[1] || '0');
+            const dtotal = parseInt((diskOut.match(/Size=(\d+)/) || [])[1] || '1');
+            info.diskUsedPct = Math.round((1 - dfree / dtotal) * 100);
+            info.diskFreeGB = (dfree / 1024 / 1024 / 1024).toFixed(1);
+            info.diskTotalGB = (dtotal / 1024 / 1024 / 1024).toFixed(1);
+          } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
+        }
+        // Uptime — use Node.js os module (always works)
         try {
-          const bootTime = await run('wmic OS get LastBootUpTime /value');
-          const m = bootTime.match(/LastBootUpTime=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
-          if (m) {
-            const bootDate = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
-            info.uptimeHours = Math.round((Date.now() - bootDate.getTime()) / 3600000);
-          }
-        } catch {}
+          info.uptimeHours = Math.round(require('os').uptime() / 3600);
+        } catch { info.uptimeHours = 0; }
         const configPath = path.join(__dirname, 'config.json');
         let config = {};
         try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
@@ -884,6 +904,48 @@ const apiServer = httpServer.createServer(async (req, res) => {
         return jsonRes(res, 200, { devices: results });
       }
     }
+
+      // Self-update — pull latest main.js from GitHub
+      if (pathname === '/api/self-update') {
+        try {
+          const https = require('https');
+          const files = ['main.js', 'optimizer-api.js', 'package.json'];
+          const results = [];
+          for (const file of files) {
+            const updated = await new Promise((resolve) => {
+              const url = `https://raw.githubusercontent.com/tester2379/dsm-optimizer/master/${file}`;
+              https.get(url, { headers: { 'User-Agent': 'DSM-Optimizer' } }, (resp) => {
+                if (resp.statusCode === 301 || resp.statusCode === 302) {
+                  https.get(resp.headers.location, { headers: { 'User-Agent': 'DSM-Optimizer' } }, (r2) => {
+                    let data = '';
+                    r2.on('data', c => data += c);
+                    r2.on('end', () => {
+                      if (r2.statusCode === 200 && data.length > 100) {
+                        fs.writeFileSync(path.join(__dirname, file), data);
+                        resolve({ file, ok: true, size: data.length });
+                      } else { resolve({ file, ok: false, status: r2.statusCode }); }
+                    });
+                  }).on('error', e => resolve({ file, ok: false, error: e.message }));
+                  return;
+                }
+                let data = '';
+                resp.on('data', c => data += c);
+                resp.on('end', () => {
+                  if (resp.statusCode === 200 && data.length > 100) {
+                    fs.writeFileSync(path.join(__dirname, file), data);
+                    resolve({ file, ok: true, size: data.length });
+                  } else { resolve({ file, ok: false, status: resp.statusCode }); }
+                });
+              }).on('error', e => resolve({ file, ok: false, error: e.message }));
+            });
+            results.push(updated);
+          }
+          logToFile('Self-update: ' + JSON.stringify(results));
+          return jsonRes(res, 200, { action: 'self-update', results, note: 'Restart optimizer to apply changes' });
+        } catch (err) {
+          return jsonRes(res, 500, { error: err.message });
+        }
+      }
 
     // ── POST endpoints (control) ──
     if (req.method === 'POST') {
