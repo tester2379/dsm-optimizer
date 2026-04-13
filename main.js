@@ -1273,7 +1273,8 @@ async function getHealthData() {
     info.uptimeHours = Math.round(require('os').uptime() / 3600);
   } catch { info.uptimeHours = 0; }
 
-  const config = loadConfig();
+  let config = {};
+  try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch {}
   info.deviceName = config.deviceName || require('os').hostname();
   info.version = '1.2.0';
   info.maxPerformance = config.maxPerformance || false;
