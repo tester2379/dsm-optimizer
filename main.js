@@ -1058,10 +1058,52 @@ const apiServer = httpServer.createServer(async (req, res) => {
 
 apiServer.listen(API_PORT, '0.0.0.0', () => {
   logToFile('API server listening on port ' + API_PORT);
+  // Auto port-forward via UPnP
+  setupUPnP();
 });
 apiServer.on('error', (err) => {
   logToFile('API server error: ' + err.message, 'ERROR');
 });
+
+// ── UPnP Auto Port Forward ─────────────────────────────────────────────────
+// Automatically tells the router to forward API_PORT to this machine
+
+function setupUPnP() {
+  try {
+    const natUpnp = require('nat-upnp');
+    const client = natUpnp.createClient();
+
+    client.portMapping({
+      public: API_PORT,
+      private: API_PORT,
+      ttl: 0, // permanent until removed
+      description: 'DSM Optimizer API'
+    }, (err) => {
+      if (err) {
+        logToFile('UPnP port forward failed: ' + err.message + ' (router may not support UPnP)', 'ERROR');
+      } else {
+        logToFile('UPnP: Port ' + API_PORT + ' forwarded automatically');
+      }
+    });
+
+    // Also try to get external IP via UPnP
+    client.externalIp((err, ip) => {
+      if (!err && ip) {
+        logToFile('UPnP external IP: ' + ip);
+      }
+    });
+  } catch (err) {
+    logToFile('UPnP setup error: ' + err.message, 'ERROR');
+  }
+}
+
+// Also open Windows Firewall for the port
+try {
+  execSync('netsh advfirewall firewall add rule name="DSM Optimizer API" dir=in action=allow protocol=TCP localport=' + API_PORT + ' 2>nul', { stdio: 'pipe', timeout: 5000 });
+  logToFile('Firewall rule added for port ' + API_PORT);
+} catch {
+  logToFile('Firewall rule may already exist or failed');
+}
 
 // ── Call Home — periodic health beacon to DSM Monitor ──────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
