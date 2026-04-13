@@ -776,27 +776,19 @@ const apiServer = httpServer.createServer(async (req, res) => {
             info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
           } catch { info.cpu = 0; }
         }
-        // RAM — PowerShell with fallback
+        // RAM — use Node.js os module (always works, no shell issues)
         try {
-          const ramOut = await run('powershell -Command "$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = [math]::Round((1-$os.FreePhysicalMemory/$os.TotalVisibleMemorySize)*100); Write-Output \\"$used|$free|$total\\""');
-          const [usedPct, freeGB, totalGB] = ramOut.split('|');
-          info.ramUsedPct = parseInt(usedPct) || 0;
-          info.ramFreeGB = freeGB || '0';
-          info.ramTotalGB = totalGB || '0';
-        } catch {
-          try {
-            const ramFree = await run('wmic OS get FreePhysicalMemory /value');
-            const ramTotal = await run('wmic OS get TotalVisibleMemorySize /value');
-            const free = parseInt((ramFree.match(/=(\d+)/) || [])[1] || '0');
-            const total = parseInt((ramTotal.match(/=(\d+)/) || [])[1] || '1');
-            info.ramUsedPct = Math.round((1 - free / total) * 100);
-            info.ramFreeGB = (free / 1024 / 1024).toFixed(1);
-            info.ramTotalGB = (total / 1024 / 1024).toFixed(1);
-          } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
-        }
-        // Disk — PowerShell with fallback
+          const os = require('os');
+          const totalMem = os.totalmem();
+          const freeMem = os.freemem();
+          info.ramTotalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
+          info.ramFreeGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
+          info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
+        } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
+        // Disk — use PowerShell encoded command to avoid escaping issues
         try {
-          const diskOut = await run('powershell -Command "$d = Get-CimInstance Win32_LogicalDisk -Filter \\"DeviceID=\'C:\'\\"; $total = [math]::Round($d.Size/1GB,1); $free = [math]::Round($d.FreeSpace/1GB,1); $used = [math]::Round((1-$d.FreeSpace/$d.Size)*100); Write-Output \\"$used|$free|$total\\""');
+          const psScript = Buffer.from('$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'";$t=[math]::Round($d.Size/1GB,1);$f=[math]::Round($d.FreeSpace/1GB,1);$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100);Write-Output "$u|$f|$t"').toString('base64');
+          const diskOut = await run('powershell -EncodedCommand ' + psScript);
           const [dUsed, dFree, dTotal] = diskOut.split('|');
           info.diskUsedPct = parseInt(dUsed) || 0;
           info.diskFreeGB = dFree || '0';
@@ -1188,23 +1180,20 @@ async function getHealthData() {
     info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
   } catch { info.cpu = 0; }
   try {
-    const ramFree = execSync('wmic OS get FreePhysicalMemory /value', { encoding: 'utf8', timeout: 5000 });
-    const ramTotal = execSync('wmic ComputerSystem get TotalPhysicalMemory /value', { encoding: 'utf8', timeout: 5000 });
-    const freeKB = parseInt((ramFree.match(/FreePhysicalMemory=(\d+)/) || [])[1] || '0');
-    const totalBytes = parseInt((ramTotal.match(/TotalPhysicalMemory=(\d+)/) || [])[1] || '0');
-    const totalGB = totalBytes / (1024 * 1024 * 1024);
-    const freeGB = freeKB / (1024 * 1024);
-    info.ramUsedPct = Math.round(((totalGB - freeGB) / totalGB) * 100);
-    info.ramFreeGB = freeGB.toFixed(1);
-    info.ramTotalGB = totalGB.toFixed(1);
+    const os = require('os');
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    info.ramTotalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
+    info.ramFreeGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
+    info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
   } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
   try {
-    const disk = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace,Size /value', { encoding: 'utf8', timeout: 5000 });
-    const free = parseInt((disk.match(/FreeSpace=(\d+)/) || [])[1] || '0');
-    const total = parseInt((disk.match(/Size=(\d+)/) || [])[1] || '0');
-    info.diskUsedPct = Math.round(((total - free) / total) * 100);
-    info.diskFreeGB = (free / (1024 * 1024 * 1024)).toFixed(1);
-    info.diskTotalGB = (total / (1024 * 1024 * 1024)).toFixed(1);
+    const psScript = Buffer.from('$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'";$t=[math]::Round($d.Size/1GB,1);$f=[math]::Round($d.FreeSpace/1GB,1);$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100);Write-Output "$u|$f|$t"').toString('base64');
+    const diskOut = execSync('powershell -EncodedCommand ' + psScript, { encoding: 'utf8', timeout: 10000 });
+    const [dU, dF, dT] = diskOut.trim().split('|');
+    info.diskUsedPct = parseInt(dU) || 0;
+    info.diskFreeGB = dF || '0';
+    info.diskTotalGB = dT || '0';
   } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
   try {
     info.uptimeHours = Math.round(require('os').uptime() / 3600);
