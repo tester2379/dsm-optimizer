@@ -41,7 +41,8 @@ try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTENT_CONFIG = path.join(DATA_DIR, 'config.json');
 const PERSISTENT_CALLHOME = path.join(DATA_DIR, 'callhome.json');
 if (!fs.existsSync(PERSISTENT_CONFIG)) {
-  try { fs.copyFileSync(PERSISTENT_CONFIG, PERSISTENT_CONFIG); } catch {}
+  const bundledConfig = path.join(__dirname, 'config.json');
+  try { if (fs.existsSync(bundledConfig)) fs.copyFileSync(bundledConfig, PERSISTENT_CONFIG); } catch (e) { console.error('Config init failed:', e.message); }
 }
 if (!fs.existsSync(PERSISTENT_CALLHOME) && fs.existsSync(path.join(__dirname, 'callhome.json'))) {
   try { fs.copyFileSync(path.join(__dirname, 'callhome.json'), PERSISTENT_CALLHOME); } catch {}
@@ -85,7 +86,7 @@ app.on('second-instance', () => {
   if (win) { win.show(); win.focus(); }
 });
 
-logToFile('Windows Optimizer starting (admin: true)...');
+logToFile(`Windows Optimizer starting (admin: ${_isAdmin})...`);
 
 let win = null;
 let tray = null;
@@ -939,9 +940,56 @@ const apiServer = httpServer.createServer(async (req, res) => {
             results.push(updated);
           }
           logToFile('Self-update: ' + JSON.stringify(results));
-          return jsonRes(res, 200, { action: 'self-update', results, note: 'Restart optimizer to apply changes' });
+          const anyUpdated = results.some(r => r.ok);
+          if (anyUpdated) {
+            // Auto-restart after 3 seconds to apply changes
+            setTimeout(() => {
+              logToFile('Auto-restarting after self-update...');
+              app.relaunch();
+              app.exit(0);
+            }, 3000);
+          }
+          return jsonRes(res, 200, { action: 'self-update', results, restarting: anyUpdated });
         } catch (err) {
           return jsonRes(res, 500, { error: err.message });
+        }
+      }
+
+      // List updatable files
+      if (pathname === '/api/update/files') {
+        const appDir = __dirname;
+        const updatable = ['main.js', 'optimizer-api.js', 'optimizer.js', 'package.json', 'preload.js'];
+        const files = updatable.map(name => {
+          const fp = path.join(appDir, name);
+          try {
+            const stat = fs.statSync(fp);
+            return { name, size: stat.size, modified: stat.mtime.toISOString() };
+          } catch { return { name, exists: false }; }
+        }).filter(f => f.size);
+        return jsonRes(res, 200, { appDir, files });
+      }
+
+      // Push a file update
+      if (pathname === '/api/update/file' && req.method === 'POST') {
+        const body = await parseJsonBody(req);
+        if (!body.name || !body.content) return jsonRes(res, 400, { error: 'name and content required' });
+        const allowed = ['main.js', 'optimizer-api.js', 'optimizer.js', 'package.json', 'preload.js'];
+        if (!allowed.includes(body.name)) return jsonRes(res, 400, { error: 'file not in allowed list' });
+        try {
+          const fp = path.join(__dirname, body.name);
+          // Backup current file
+          if (fs.existsSync(fp)) {
+            fs.copyFileSync(fp, fp + '.bak');
+          }
+          fs.writeFileSync(fp, body.content, 'utf8');
+          logToFile('Remote file update: ' + body.name + ' (' + body.content.length + ' bytes)');
+          // Auto-restart if main files changed
+          if (['main.js', 'optimizer-api.js'].includes(body.name) && body.restart !== false) {
+            setTimeout(() => { app.relaunch(); app.exit(0); }, 3000);
+          }
+          return jsonRes(res, 200, { ok: true, file: body.name, size: body.content.length, restarting: ['main.js', 'optimizer-api.js'].includes(body.name) });
+        } catch (e) {
+          return jsonRes(res, 500, { error: e.message });
         }
       }
 
