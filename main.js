@@ -799,16 +799,15 @@ const apiServer = httpServer.createServer(async (req, res) => {
           info.ramFreeGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
           info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
         } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
-        // Disk — write temp PS1 script to avoid encoding issues
+        // Disk — use UTF-16LE encoded PowerShell command
         try {
-          const tmpPs1 = path.join(require('os').tmpdir(), 'dsm-disk.ps1');
-          fs.writeFileSync(tmpPs1, '$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'"\n$t=[math]::Round($d.Size/1GB,1)\n$f=[math]::Round($d.FreeSpace/1GB,1)\n$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100)\nWrite-Output "$u|$f|$t"');
-          const diskOut = await run('powershell -ExecutionPolicy Bypass -File "' + tmpPs1 + '"');
+          const psCmd = '$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'";$t=[math]::Round($d.Size/1GB,1);$f=[math]::Round($d.FreeSpace/1GB,1);$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100);Write-Output "$u|$f|$t"';
+          const psScript = Buffer.from(psCmd, 'utf16le').toString('base64');
+          const diskOut = await run('powershell -NoProfile -EncodedCommand ' + psScript);
           const parts = diskOut.trim().split('|');
           info.diskUsedPct = parseInt(parts[0]) || 0;
           info.diskFreeGB = parts[1] || '0';
           info.diskTotalGB = parts[2] || '0';
-          try { fs.unlinkSync(tmpPs1); } catch {}
         } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
         // Uptime — use Node.js os module (always works)
         try {
@@ -1269,14 +1268,12 @@ async function getHealthData() {
     info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
   } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
   try {
-    const tmpPs1 = path.join(require('os').tmpdir(), 'dsm-disk.ps1');
-    fs.writeFileSync(tmpPs1, '$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'"\n$t=[math]::Round($d.Size/1GB,1)\n$f=[math]::Round($d.FreeSpace/1GB,1)\n$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100)\nWrite-Output "$u|$f|$t"');
-    const diskOut = execSync('powershell -ExecutionPolicy Bypass -File "' + tmpPs1 + '"', { encoding: 'utf8', timeout: 10000 });
+    const diskCmd = 'powershell -NoProfile -Command "$d=Get-CimInstance Win32_LogicalDisk -Filter \\"DeviceID=\'C:\'\\"; $t=[math]::Round($d.Size/1GB,1); $f=[math]::Round($d.FreeSpace/1GB,1); $u=[math]::Round((1-$d.FreeSpace/$d.Size)*100); Write-Output \\"$u|$f|$t\\""';
+    const diskOut = execSync(diskCmd, { encoding: 'utf8', timeout: 10000 });
     const [dU, dF, dT] = diskOut.trim().split('|');
     info.diskUsedPct = parseInt(dU) || 0;
     info.diskFreeGB = dF || '0';
     info.diskTotalGB = dT || '0';
-    try { fs.unlinkSync(tmpPs1); } catch {}
   } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
   try {
     info.uptimeHours = Math.round(require('os').uptime() / 3600);
