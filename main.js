@@ -10,13 +10,18 @@ const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 
+function sanitizeForShell(input) {
+  if (typeof input !== 'string') return '';
+  return input.replace(/[;&|`$(){}[\]<>!'"\\]/g, '');
+}
+
 // ── Admin elevation — relaunch as admin if not elevated ─────────────────────
 
 let _isAdmin = false;
 try {
   execSync('net session', { stdio: 'pipe', timeout: 5000 });
   _isAdmin = true;
-} catch {}
+} catch (e) { console.error(e.message); }
 
 if (!_isAdmin && !process.argv.includes('--no-admin')) {
   // Try to relaunch as admin (UAC prompt)
@@ -27,14 +32,14 @@ if (!_isAdmin && !process.argv.includes('--no-admin')) {
     const psCmd = `Start-Process -FilePath '${electronExe.replace(/'/g, "''")}' -ArgumentList ${args} -Verb RunAs`;
     execSync(`powershell -Command "${psCmd}"`, { stdio: 'ignore', timeout: 10000 });
     process.exit(0);
-  } catch {
-    console.log('Admin elevation skipped — running without admin rights.');
+  } catch (e) {
+    console.log('Admin elevation skipped — running without admin rights: ' + e.message);
   }
 }
 
 // ── Persistent data dir (survives portable exe restarts) ────────────────────
 const DATA_DIR = path.join(process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'), 'DSM Optimizer');
-try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { console.error('Data dir creation failed: ' + e.message); }
 
 // Copy bundled config to persistent dir on first run
 const PERSISTENT_CONFIG = path.join(DATA_DIR, 'config.json');
@@ -44,12 +49,12 @@ if (!fs.existsSync(PERSISTENT_CONFIG)) {
   try { if (fs.existsSync(bundledConfig)) fs.copyFileSync(bundledConfig, PERSISTENT_CONFIG); } catch (e) { console.error('Config init failed:', e.message); }
 }
 if (!fs.existsSync(PERSISTENT_CALLHOME) && fs.existsSync(path.join(__dirname, 'callhome.json'))) {
-  try { fs.copyFileSync(path.join(__dirname, 'callhome.json'), PERSISTENT_CALLHOME); } catch {}
+  try { fs.copyFileSync(path.join(__dirname, 'callhome.json'), PERSISTENT_CALLHOME); } catch (e) { console.error('Callhome init failed: ' + e.message); }
 }
 
 // ── Full logging — catches everything ───────────────────────────────────────
 const LOG_DIR = path.join(DATA_DIR, 'logs');
-try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (e) { console.error('Log dir creation failed: ' + e.message); }
 
 function logToFile(msg, level = 'INFO') {
   const ts = new Date().toLocaleString('en-MT');
@@ -57,8 +62,18 @@ function logToFile(msg, level = 'INFO') {
   try {
     const d = new Date();
     const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    fs.appendFileSync(path.join(LOG_DIR, `optimizer-${dateStr}.log`), line);
-  } catch {}
+    const logPath = path.join(LOG_DIR, `optimizer-${dateStr}.log`);
+    // Log rotation: if file exceeds 10MB, rename to .old and start fresh
+    try {
+      if (fs.existsSync(logPath)) {
+        const stats = fs.statSync(logPath);
+        if (stats.size > 10 * 1024 * 1024) {
+          fs.renameSync(logPath, logPath + '.old');
+        }
+      }
+    } catch (e) { console.error('Log rotation error: ' + e.message); }
+    fs.appendFileSync(logPath, line);
+  } catch (e) { console.error('Log write error: ' + e.message); }
   if (level === 'ERROR') console.error(line.trim());
   else console.log(line.trim());
 }
@@ -121,7 +136,7 @@ function createWindow() {
 
 function createTray() {
   // Destroy old tray if exists (prevents duplicate icons)
-  if (tray) { try { tray.destroy(); } catch {} tray = null; }
+  if (tray) { try { tray.destroy(); } catch (e) { logToFile('Error: ' + e.message); } tray = null; }
   // Use icon.ico for tray, fallback to data URL
   let icon;
   const icoPath = path.join(__dirname, 'icon.ico');
@@ -190,7 +205,7 @@ app.on('before-quit', () => {
 const DEVICES_FILE = path.join(__dirname, 'devices.json');
 
 function loadDevices() {
-  try { return JSON.parse(fs.readFileSync(DEVICES_FILE, 'utf8')); } catch { return []; }
+  try { return JSON.parse(fs.readFileSync(DEVICES_FILE, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); return []; }
 }
 
 function saveDevices(devices) {
@@ -202,7 +217,7 @@ function saveDevices(devices) {
 const SCHEDULE_FILE = path.join(__dirname, 'schedules.json');
 
 function loadSchedules() {
-  try { return JSON.parse(fs.readFileSync(SCHEDULE_FILE, 'utf8')); } catch { return []; }
+  try { return JSON.parse(fs.readFileSync(SCHEDULE_FILE, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); return []; }
 }
 
 function saveSchedules(schedules) {
@@ -277,7 +292,7 @@ function run(cmd, timeout = 10000) {
 }
 
 function runSync(cmd, timeout = 10000) {
-  try { return execSync(cmd, { encoding: 'utf8', timeout, shell: true, stdio: 'pipe' }).trim(); } catch { return ''; }
+  try { return execSync(cmd, { encoding: 'utf8', timeout, shell: true, stdio: 'pipe' }).trim(); } catch (e) { logToFile('Error: ' + e.message); return ''; }
 }
 
 ipcMain.handle('get-system-info', async () => {
@@ -303,7 +318,7 @@ ipcMain.handle('get-system-info', async () => {
     info.cpu = parseInt(cpuLoad.match(/LoadPercentage=(\d+)/)?.[1] || '0');
     info.cpuName = (cpuName.match(/Name=(.+)/)?.[1] || 'Unknown').trim();
     info.cpuCores = parseInt(cpuCores.match(/=(\d+)/)?.[1] || '0');
-  } catch { info.cpu = 0; }
+  } catch (e) { logToFile('Error: ' + e.message); info.cpu = 0; }
 
   // RAM
   try {
@@ -312,7 +327,7 @@ ipcMain.handle('get-system-info', async () => {
     info.ramFreeGB = (free / 1024 / 1024).toFixed(1);
     info.ramTotalGB = (total / 1024 / 1024).toFixed(1);
     info.ramUsedPct = Math.round((1 - free / total) * 100);
-  } catch { info.ramUsedPct = 0; }
+  } catch (e) { logToFile('Error: ' + e.message); info.ramUsedPct = 0; }
 
   // Disk
   try {
@@ -321,7 +336,7 @@ ipcMain.handle('get-system-info', async () => {
     info.diskFreeGB = (free / 1024 / 1024 / 1024).toFixed(1);
     info.diskTotalGB = (total / 1024 / 1024 / 1024).toFixed(1);
     info.diskUsedPct = Math.round((1 - free / total) * 100);
-  } catch { info.diskUsedPct = 0; }
+  } catch (e) { logToFile('Error: ' + e.message); info.diskUsedPct = 0; }
 
   // Uptime
   try {
@@ -333,7 +348,7 @@ ipcMain.handle('get-system-info', async () => {
       info.uptimeHours = Math.floor((upMs % 86400000) / 3600000);
       info.uptimeMinutes = Math.floor((upMs % 3600000) / 60000);
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
 
   // Network
   info.networkUp = netTest.includes('Reply from');
@@ -346,7 +361,7 @@ ipcMain.handle('get-system-info', async () => {
   info.processCount = parseInt(procCount) || 0;
 
   // Top processes
-  try { info.topProcesses = JSON.parse(topProcs || '[]'); } catch { info.topProcesses = []; }
+  try { info.topProcesses = JSON.parse(topProcs || '[]'); } catch (e) { logToFile('Error: ' + e.message); info.topProcesses = []; }
 
   return info;
 });
@@ -359,7 +374,7 @@ ipcMain.handle('run-optimizer', async (_, command) => {
 });
 
 ipcMain.handle('get-config', () => {
-  try { return JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); return {}; }
 });
 
 ipcMain.handle('save-config', (_, config) => {
@@ -373,20 +388,26 @@ ipcMain.handle('get-running-apps', async () => {
   try {
     const output = await run('powershell -Command "Get-Process | Where-Object {$_.MainWindowTitle -ne \'\'} | Select-Object Id, ProcessName, @{N=\'MemMB\';E={[math]::Round($_.WorkingSet/1MB)}}, MainWindowTitle | Sort-Object -Property MemMB -Descending | ConvertTo-Json -Depth 1"', 15000);
     if (output) return JSON.parse(output);
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   return [];
 });
 
 ipcMain.handle('close-app', async (_, pid, gentle) => {
+  if (!String(pid).match(/^\d+$/)) return false;
   try {
     if (gentle) {
-      // Gentle: send WM_CLOSE first, wait 5s, then force
-      await run('powershell -Command "Stop-Process -Id ' + pid + ' -ErrorAction SilentlyContinue"', 10000);
+      // Gentle: send WM_CLOSE first via taskkill (no /F), wait 5s, then force kill as fallback
+      await run('taskkill /PID ' + pid, 5000);
+      // Check if process still alive after graceful close attempt
+      const check = await run('tasklist /FI "PID eq ' + pid + '" /NH', 3000);
+      if (check && check.includes(String(pid))) {
+        await run('taskkill /F /PID ' + pid, 5000);
+      }
     } else {
       await run('taskkill /F /PID ' + pid, 5000);
     }
     return true;
-  } catch { return false; }
+  } catch (e) { logToFile('Error: ' + e.message); return false; }
 });
 
 ipcMain.handle('close-all-non-system', async () => {
@@ -398,10 +419,10 @@ ipcMain.handle('close-all-non-system', async () => {
     let closed = 0;
     for (const app of (Array.isArray(apps) ? apps : [apps])) {
       if (systemApps.some(s => app.ProcessName.toLowerCase().includes(s.toLowerCase()))) continue;
-      try { await run('powershell -Command "Stop-Process -Id ' + app.Id + ' -ErrorAction SilentlyContinue"', 5000); closed++; } catch {}
+      try { await run('taskkill /PID ' + app.Id, 5000); closed++; } catch (e) { logToFile('Error: ' + e.message); }
     }
     return closed;
-  } catch { return 0; }
+  } catch (e) { logToFile('Error: ' + e.message); return 0; }
 });
 
 // ── IPC: Deep Uninstaller ───────────────────────────────────────────────────
@@ -420,7 +441,7 @@ ipcMain.handle('get-installed-apps', async () => {
         installPath: a.InstallLocation || '',
       }));
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   return [];
 });
 
@@ -437,7 +458,7 @@ ipcMain.handle('deep-clean-app', async (_, installPath, appName) => {
   const cleaned = [];
   // 1. Remove install directory
   if (installPath && fs.existsSync(installPath)) {
-    try { fs.rmSync(installPath, { recursive: true, force: true }); cleaned.push('Install folder'); } catch {}
+    try { fs.rmSync(installPath, { recursive: true, force: true }); cleaned.push('Install folder'); } catch (e) { logToFile('Error: ' + e.message); }
   }
   // 2. Clean AppData
   const appData = [
@@ -448,22 +469,23 @@ ipcMain.handle('deep-clean-app', async (_, installPath, appName) => {
   ];
   for (const dir of appData) {
     if (fs.existsSync(dir)) {
-      try { fs.rmSync(dir, { recursive: true, force: true }); cleaned.push('AppData: ' + path.basename(dir)); } catch {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); cleaned.push('AppData: ' + path.basename(dir)); } catch (e) { logToFile('Error: ' + e.message); }
     }
   }
   // 3. Clean registry (user keys)
+  const safeAppName = sanitizeForShell(appName);
   try {
-    await run('reg delete "HKCU\\Software\\' + appName + '" /f 2>nul');
+    await run('reg delete "HKCU\\Software\\' + safeAppName + '" /f 2>nul');
     cleaned.push('Registry HKCU');
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   // 4. Remove from startup
   try {
-    await run('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "' + appName + '" /f 2>nul');
-  } catch {}
+    await run('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "' + safeAppName + '" /f 2>nul');
+  } catch (e) { logToFile('Error: ' + e.message); }
   // 5. Clean temp files
   try {
-    await run('del /q /s "%TEMP%\\*' + appName.replace(/\s/g, '') + '*" 2>nul');
-  } catch {}
+    await run('del /q /s "%TEMP%\\*' + safeAppName.replace(/\s/g, '') + '*" 2>nul');
+  } catch (e) { logToFile('Error: ' + e.message); }
 
   return { cleaned };
 });
@@ -479,7 +501,7 @@ ipcMain.handle('get-startup-entries', async () => {
       const m = line.match(/^\s+(\S+)\s+REG_SZ\s+(.+)$/i);
       if (m) entries.push({ name: m[1], path: m[2].trim(), hive: 'HKCU', enabled: true });
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   // Read HKCU\...\RunDisabled (disabled)
   try {
     const hkcuDis = await run('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunDisabled" 2>nul');
@@ -487,7 +509,7 @@ ipcMain.handle('get-startup-entries', async () => {
       const m = line.match(/^\s+(\S+)\s+REG_SZ\s+(.+)$/i);
       if (m) entries.push({ name: m[1], path: m[2].trim(), hive: 'HKCU', enabled: false });
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   // Read HKLM\...\Run (enabled)
   try {
     const hklmRun = await run('reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" 2>nul');
@@ -495,7 +517,7 @@ ipcMain.handle('get-startup-entries', async () => {
       const m = line.match(/^\s+(\S+)\s+REG_SZ\s+(.+)$/i);
       if (m) entries.push({ name: m[1], path: m[2].trim(), hive: 'HKLM', enabled: true });
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   // Read HKLM\...\RunDisabled (disabled)
   try {
     const hklmDis = await run('reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunDisabled" 2>nul');
@@ -503,7 +525,7 @@ ipcMain.handle('get-startup-entries', async () => {
       const m = line.match(/^\s+(\S+)\s+REG_SZ\s+(.+)$/i);
       if (m) entries.push({ name: m[1], path: m[2].trim(), hive: 'HKLM', enabled: false });
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   return entries;
 });
 
@@ -548,7 +570,7 @@ ipcMain.handle('get-disk-analysis', async () => {
       const out = await run(`powershell -Command "(Get-ChildItem '${folder}' -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum"`, 30000);
       const bytes = parseInt(out) || 0;
       return { path: folder, sizeMB: Math.round(bytes / 1024 / 1024), sizeGB: (bytes / 1024 / 1024 / 1024).toFixed(1) };
-    } catch { return { path: folder, sizeMB: 0, sizeGB: '0.0' }; }
+    } catch (e) { logToFile('Error: ' + e.message); return { path: folder, sizeMB: 0, sizeGB: '0.0' }; }
   });
   result.folders = await Promise.all(folderPromises);
 
@@ -568,7 +590,7 @@ ipcMain.handle('get-disk-analysis', async () => {
       } else {
         result.browserCaches.push({ name: c.name, sizeMB: 0 });
       }
-    } catch { result.browserCaches.push({ name: c.name, sizeMB: 0 }); }
+    } catch (e) { logToFile('Error: ' + e.message); result.browserCaches.push({ name: c.name, sizeMB: 0 }); }
   }
 
   // Temp folders
@@ -589,7 +611,7 @@ ipcMain.handle('get-disk-analysis', async () => {
       } else {
         result.tempFolders.push({ name: t.name, sizeMB: 0 });
       }
-    } catch { result.tempFolders.push({ name: t.name, sizeMB: 0 }); }
+    } catch (e) { logToFile('Error: ' + e.message); result.tempFolders.push({ name: t.name, sizeMB: 0 }); }
   }
 
   return result;
@@ -611,7 +633,7 @@ ipcMain.handle('get-network-info', async () => {
       info.adapter = adapter.Name || 'Unknown';
       info.speed = adapter.LinkSpeed || 'Unknown';
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
 
   try {
     // Bytes sent/received
@@ -635,7 +657,7 @@ ipcMain.handle('get-network-info', async () => {
       _lastNetBytes = { sent: info.bytesSent, recv: info.bytesRecv };
       _lastNetTime = now;
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
 
   return info;
 });
@@ -723,11 +745,11 @@ function applyMaxPerformanceOnStartup() {
         'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f 2>nul',
       ];
       for (const t of tasks) {
-        try { execSync(t, { encoding: 'utf8', timeout: 10000, shell: true, stdio: 'pipe' }); } catch {}
+        try { execSync(t, { encoding: 'utf8', timeout: 10000, shell: true, stdio: 'pipe' }); } catch (e) { logToFile('Error: ' + e.message); }
       }
       logToFile('Max Performance applied on startup.');
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
 }
 
 // Window controls
@@ -752,7 +774,7 @@ function parseJsonBody(req) {
   return new Promise(resolve => {
     let body = '';
     req.on('data', c => { body += c; });
-    req.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve({}); } });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { logToFile('Error: ' + e.message); resolve({}); } });
   });
 }
 
@@ -784,11 +806,12 @@ const apiServer = httpServer.createServer(async (req, res) => {
         try {
           const cpuOut = await run('powershell -Command "(Get-CimInstance Win32_Processor).LoadPercentage"');
           info.cpu = parseInt(cpuOut) || 0;
-        } catch {
+        } catch (e) {
+          logToFile('Error: ' + e.message);
           try {
             const cpuLoad = await run('wmic cpu get LoadPercentage /value');
             info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
-          } catch { info.cpu = 0; }
+          } catch (e2) { logToFile('Error: ' + e2.message); info.cpu = 0; }
         }
         // RAM — use Node.js os module (always works, no shell issues)
         try {
@@ -798,7 +821,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
           info.ramTotalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
           info.ramFreeGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
           info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
-        } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
+        } catch (e) { logToFile('Error: ' + e.message); info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
         // Disk — use UTF-16LE encoded PowerShell command
         try {
           const psCmd = '$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'";$t=[math]::Round($d.Size/1GB,1);$f=[math]::Round($d.FreeSpace/1GB,1);$u=[math]::Round((1-$d.FreeSpace/$d.Size)*100);Write-Output "$u|$f|$t"';
@@ -808,14 +831,14 @@ const apiServer = httpServer.createServer(async (req, res) => {
           info.diskUsedPct = parseInt(parts[0]) || 0;
           info.diskFreeGB = parts[1] || '0';
           info.diskTotalGB = parts[2] || '0';
-        } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
+        } catch (e) { logToFile('Error: ' + e.message); info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
         // Uptime — use Node.js os module (always works)
         try {
           info.uptimeHours = Math.round(require('os').uptime() / 3600);
-        } catch { info.uptimeHours = 0; }
+        } catch (e) { logToFile('Error: ' + e.message); info.uptimeHours = 0; }
         const configPath = PERSISTENT_CONFIG;
         let config = {};
-        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); }
         info.maxPerformance = config.maxPerformance || false;
         info.deviceName = config.deviceName || 'Unnamed';
         info.version = '1.3.0';
@@ -838,7 +861,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
               if (m) entries.push({ name: m[1], path: m[2].trim(), hive, enabled });
             }
           }
-        } catch {}
+        } catch (e) { logToFile('Error: ' + e.message); }
         return jsonRes(res, 200, { entries });
       }
 
@@ -854,7 +877,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
           const content = fs.readFileSync(logPath, 'utf8');
           const lines = content.trim().split('\n').slice(-50);
           return jsonRes(res, 200, { lines });
-        } catch { return jsonRes(res, 200, { lines: [] }); }
+        } catch (e) { logToFile('Error: ' + e.message); return jsonRes(res, 200, { lines: [] }); }
       }
 
       if (pathname === '/api/network') {
@@ -866,14 +889,14 @@ const apiServer = httpServer.createServer(async (req, res) => {
           const localIP = getLocalIP();
           const pubIP = await getPublicIP();
           return jsonRes(res, 200, { adapter: adapter.Name, speed: adapter.LinkSpeed, bytesSent: stats.SentBytes || 0, bytesRecv: stats.ReceivedBytes || 0, localIP, publicIP: pubIP });
-        } catch { return jsonRes(res, 200, { adapter: 'Unknown', speed: 'Unknown' }); }
+        } catch (e) { logToFile('Error: ' + e.message); return jsonRes(res, 200, { adapter: 'Unknown', speed: 'Unknown' }); }
       }
 
       if (pathname === '/api/running-apps') {
         try {
           const out = await run('powershell -Command "Get-Process | Where-Object {$_.MainWindowTitle -ne \'\'} | Select-Object Id, ProcessName, @{N=\'MemMB\';E={[math]::Round($_.WorkingSet/1MB)}}, MainWindowTitle | Sort-Object -Property MemMB -Descending | ConvertTo-Json -Depth 1"', 15000);
           return jsonRes(res, 200, { apps: out ? JSON.parse(out) : [] });
-        } catch { return jsonRes(res, 200, { apps: [] }); }
+        } catch (e) { logToFile('Error: ' + e.message); return jsonRes(res, 200, { apps: [] }); }
       }
 
       // Devices registry — list all known optimizer instances
@@ -891,13 +914,13 @@ const apiServer = httpServer.createServer(async (req, res) => {
             const health = await new Promise((resolve, reject) => {
               const req = http.get(`http://${dev.ip}:${dev.port || 9500}/api/health?key=${API_KEY}`, { timeout: 5000 }, (res) => {
                 let d = ''; res.on('data', c => d += c);
-                res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+                res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { logToFile('Error: ' + e.message); resolve(null); } });
               });
               req.on('error', () => resolve(null));
               req.on('timeout', () => { req.destroy(); resolve(null); });
             });
             results.push({ ...dev, online: !!health, health });
-          } catch { results.push({ ...dev, online: false, health: null }); }
+          } catch (e) { logToFile('Error: ' + e.message); results.push({ ...dev, online: false, health: null }); }
         }
         return jsonRes(res, 200, { devices: results });
       }
@@ -963,7 +986,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
           try {
             const stat = fs.statSync(fp);
             return { name, size: stat.size, modified: stat.mtime.toISOString() };
-          } catch { return { name, exists: false }; }
+          } catch (e) { logToFile('Error: ' + e.message); return { name, exists: false }; }
         }).filter(f => f.size);
         return jsonRes(res, 200, { appDir, files });
       }
@@ -1062,7 +1085,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
               'powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>nul',
               'net stop WSearch 2>nul', 'net stop SysMain 2>nul',
             ];
-            for (const t of tasks) { try { execSync(t, { encoding: 'utf8', timeout: 10000, shell: true, stdio: 'pipe' }); } catch {} }
+            for (const t of tasks) { try { execSync(t, { encoding: 'utf8', timeout: 10000, shell: true, stdio: 'pipe' }); } catch (e) { logToFile('Error: ' + e.message); } }
           }
           return jsonRes(res, 200, { ok: true, maxPerformance: config.maxPerformance });
         } catch (e) { return jsonRes(res, 200, { ok: false, error: e.message }); }
@@ -1093,8 +1116,9 @@ const apiServer = httpServer.createServer(async (req, res) => {
       if (pathname === '/api/close-app') {
         const body = await parseJsonBody(req);
         if (!body.pid) return jsonRes(res, 400, { error: 'pid required' });
+        if (!String(body.pid).match(/^\d+$/)) return jsonRes(res, 400, { error: 'pid must be numeric' });
         try { await run('taskkill /F /PID ' + body.pid, 5000); return jsonRes(res, 200, { ok: true }); }
-        catch { return jsonRes(res, 200, { ok: false }); }
+        catch (e) { logToFile('Error: ' + e.message); return jsonRes(res, 200, { ok: false }); }
       }
 
       // Set device name
@@ -1155,7 +1179,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
         const body = await parseJsonBody(req);
         const checkinFile = path.join(DATA_DIR, 'checkins.json');
         let checkins = {};
-        try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch {}
+        try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); }
         const id = body.callHomeId || body.deviceName || 'unknown';
         checkins[id] = { ...body, lastSeen: new Date().toISOString() };
         fs.writeFileSync(checkinFile, JSON.stringify(checkins, null, 2));
@@ -1166,7 +1190,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
       if (pathname === '/api/optimizer/checkins') {
         const checkinFile = path.join(DATA_DIR, 'checkins.json');
         let checkins = {};
-        try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch {}
+        try { checkins = JSON.parse(fs.readFileSync(checkinFile, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); }
         return jsonRes(res, 200, checkins);
       }
 
@@ -1234,8 +1258,8 @@ function setupUPnP() {
 try {
   execSync('netsh advfirewall firewall add rule name="DSM Optimizer API" dir=in action=allow protocol=TCP localport=' + API_PORT + ' 2>nul', { stdio: 'pipe', timeout: 5000 });
   logToFile('Firewall rule added for port ' + API_PORT);
-} catch {
-  logToFile('Firewall rule may already exist or failed');
+} catch (e) {
+  logToFile('Firewall rule may already exist or failed: ' + e.message);
 }
 
 // ── Cloud Relay — push/pull health via jsonblob.com (no port forwarding) ────
@@ -1256,7 +1280,7 @@ async function cloudRelayPush() {
       require('https').get(CLOUD_RELAY_URL, { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }, (res) => {
         let data = '';
         res.on('data', c => data += c);
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ optimizers: {} }); } });
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { logToFile('Error: ' + e.message); resolve({ optimizers: {} }); } });
       }).on('error', () => resolve({ optimizers: {} }));
     });
 
@@ -1298,7 +1322,7 @@ async function cloudRelayPull() {
     require('https').get(CLOUD_RELAY_URL, { headers: { 'Accept': 'application/json' } }, (res) => {
       let data = '';
       res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ optimizers: {} }); } });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { logToFile('Error: ' + e.message); resolve({ optimizers: {} }); } });
     }).on('error', () => resolve({ optimizers: {} }));
   });
 }
@@ -1313,7 +1337,7 @@ const CALL_HOME_INTERVAL = 60000;
 const CALL_HOME_FILE = PERSISTENT_CALLHOME;
 
 function loadCallHomeConfig() {
-  try { return JSON.parse(fs.readFileSync(CALL_HOME_FILE, 'utf8')); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(CALL_HOME_FILE, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); return null; }
 }
 
 function saveCallHomeConfig(cfg) {
@@ -1325,7 +1349,7 @@ async function getHealthData() {
   try {
     const cpuLoad = execSync('wmic cpu get LoadPercentage /value', { encoding: 'utf8', timeout: 5000 });
     info.cpu = parseInt((cpuLoad.match(/LoadPercentage=(\d+)/) || [])[1] || '0');
-  } catch { info.cpu = 0; }
+  } catch (e) { logToFile('Error: ' + e.message); info.cpu = 0; }
   try {
     const os = require('os');
     const totalMem = os.totalmem();
@@ -1333,7 +1357,7 @@ async function getHealthData() {
     info.ramTotalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
     info.ramFreeGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
     info.ramUsedPct = Math.round(((totalMem - freeMem) / totalMem) * 100);
-  } catch { info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
+  } catch (e) { logToFile('Error: ' + e.message); info.ramUsedPct = 0; info.ramFreeGB = '0'; info.ramTotalGB = '0'; }
   try {
     const diskCmd = 'powershell -NoProfile -Command "$d=Get-CimInstance Win32_LogicalDisk -Filter \\"DeviceID=\'C:\'\\"; $t=[math]::Round($d.Size/1GB,1); $f=[math]::Round($d.FreeSpace/1GB,1); $u=[math]::Round((1-$d.FreeSpace/$d.Size)*100); Write-Output \\"$u|$f|$t\\""';
     const diskOut = execSync(diskCmd, { encoding: 'utf8', timeout: 10000 });
@@ -1341,13 +1365,13 @@ async function getHealthData() {
     info.diskUsedPct = parseInt(dU) || 0;
     info.diskFreeGB = dF || '0';
     info.diskTotalGB = dT || '0';
-  } catch { info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
+  } catch (e) { logToFile('Error: ' + e.message); info.diskUsedPct = 0; info.diskFreeGB = '0'; info.diskTotalGB = '0'; }
   try {
     info.uptimeHours = Math.round(require('os').uptime() / 3600);
-  } catch { info.uptimeHours = 0; }
+  } catch (e) { logToFile('Error: ' + e.message); info.uptimeHours = 0; }
 
   let config = {};
-  try { config = JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch {}
+  try { config = JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch (e) { logToFile('Error: ' + e.message); }
   info.deviceName = config.deviceName || require('os').hostname();
   info.version = '1.3.0';
   info.maxPerformance = config.maxPerformance || false;
@@ -1365,7 +1389,7 @@ function getLocalIP() {
         if (net.family === 'IPv4' && !net.internal) return net.address;
       }
     }
-  } catch {}
+  } catch (e) { logToFile('Error: ' + e.message); }
   return '127.0.0.1';
 }
 

@@ -96,7 +96,7 @@ async function run(command) {
 
     case 'close-apps': {
       let config = {};
-      try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch {}
+      try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch (e) { console.error('Error: ' + e.message); }
       let closed = 0;
       for (const app of (config.appsToClose || [])) {
         const r = await cmdAsync('taskkill /F /IM "' + app + '" /T 2>nul', 10000);
