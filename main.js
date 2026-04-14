@@ -983,6 +983,26 @@ const apiServer = httpServer.createServer(async (req, res) => {
           return jsonRes(res, 200, { ok: false, error: 'Failed — Windows limits one per 24 hours.' });
         }
       }
+      if (pathname === '/api/speed-boost') {
+        const result = await optimizer.run('speed-boost');
+        return jsonRes(res, 200, result);
+      }
+      if (pathname === '/api/memory-free') {
+        const result = await optimizer.run('memory-free');
+        return jsonRes(res, 200, result);
+      }
+      if (pathname === '/api/network-optimize') {
+        const result = await optimizer.run('network-optimize');
+        return jsonRes(res, 200, result);
+      }
+      if (pathname === '/api/privacy-lockdown') {
+        const result = await optimizer.run('privacy-lockdown');
+        return jsonRes(res, 200, result);
+      }
+      if (pathname === '/api/deep-optimize') {
+        const result = await optimizer.run('deep-optimize');
+        return jsonRes(res, 200, result);
+      }
       if (pathname === '/api/performance-mode') {
         const body = await parseJsonBody(req);
         const configPath = PERSISTENT_CONFIG;
@@ -1114,7 +1134,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
       error: 'Not found',
       endpoints: {
         GET: ['/api/health', '/api/startup-apps', '/api/schedules', '/api/logs', '/api/network', '/api/running-apps', '/api/devices', '/api/devices/status', '/api/callhome', '/api/optimizer/checkins'],
-        POST: ['/api/optimize', '/api/full-optimize', '/api/scan', '/api/update', '/api/temp-cleanup', '/api/close-apps', '/api/restart', '/api/restore-point', '/api/performance-mode', '/api/toggle-startup', '/api/schedules', '/api/close-app', '/api/device-name', '/api/devices/add', '/api/devices/remove', '/api/callhome', '/api/optimizer/checkin'],
+        POST: ['/api/optimize', '/api/full-optimize', '/api/scan', '/api/update', '/api/temp-cleanup', '/api/close-apps', '/api/restart', '/api/restore-point', '/api/performance-mode', '/api/toggle-startup', '/api/schedules', '/api/close-app', '/api/device-name', '/api/devices/add', '/api/devices/remove', '/api/callhome', '/api/optimizer/checkin', '/api/speed-boost', '/api/memory-free', '/api/network-optimize', '/api/privacy-lockdown', '/api/deep-optimize'],
       }
     });
   } catch (err) {

@@ -146,6 +146,101 @@ async function run(command) {
       return { action: 'full-optimize', optimize: opt, scan: scan, update: update };
     }
 
+    case 'speed-boost': {
+      // Aggressive Windows speed optimizations — safe but impactful
+      const tasks = [
+        // Disable unnecessary startup services
+        { name: 'Disable Connected User Experiences', cmd: 'sc config DiagTrack start= disabled & net stop DiagTrack 2>nul' },
+        { name: 'Disable WAP Push Service', cmd: 'sc config dmwappushservice start= disabled & net stop dmwappushservice 2>nul' },
+        { name: 'Disable Windows Tips', cmd: 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager" /v SoftLandingEnabled /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable background apps', cmd: 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications" /v GlobalUserDisabled /t REG_DWORD /d 1 /f 2>nul' },
+        // Network speed
+        { name: 'Disable Nagle algorithm', cmd: 'powershell -NoProfile -Command "Get-ChildItem HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces | ForEach-Object { Set-ItemProperty $_.PSPath -Name TcpAckFrequency -Value 1 -ErrorAction SilentlyContinue; Set-ItemProperty $_.PSPath -Name TCPNoDelay -Value 1 -ErrorAction SilentlyContinue }" 2>nul' },
+        { name: 'Optimize TCP settings', cmd: 'netsh int tcp set global autotuninglevel=normal 2>nul & netsh int tcp set global chimney=enabled 2>nul' },
+        // Disk performance
+        { name: 'Disable last access timestamps', cmd: 'fsutil behavior set disablelastaccess 1 2>nul' },
+        { name: 'Increase NTFS memory usage', cmd: 'fsutil behavior set memoryusage 2 2>nul' },
+        // Memory optimization
+        { name: 'Clear standby memory', cmd: 'powershell -NoProfile -Command "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()" 2>nul' },
+        { name: 'Optimize paging', cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management" /v DisablePagingExecutive /t REG_DWORD /d 1 /f 2>nul' },
+        // UI responsiveness
+        { name: 'Reduce menu show delay', cmd: 'reg add "HKCU\\Control Panel\\Desktop" /v MenuShowDelay /t REG_SZ /d "50" /f 2>nul' },
+        { name: 'Disable animations', cmd: 'reg add "HKCU\\Control Panel\\Desktop\\WindowMetrics" /v MinAnimate /t REG_SZ /d "0" /f 2>nul' },
+        { name: 'Disable transparency', cmd: 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f 2>nul' },
+        // GPU scheduling
+        { name: 'Enable hardware GPU scheduling', cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers" /v HwSchMode /t REG_DWORD /d 2 /f 2>nul' },
+        // Power
+        { name: 'Ultimate performance power plan', cmd: 'powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>nul & powercfg /setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>nul' },
+        // Disable telemetry
+        { name: 'Disable telemetry', cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable Cortana', cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search" /v AllowCortana /t REG_DWORD /d 0 /f 2>nul' },
+      ];
+      let done = 0;
+      for (const t of tasks) {
+        const r = await cmdAsync(t.cmd, 30000);
+        if (r.ok) done++;
+      }
+      return { action: 'speed-boost', done, total: tasks.length };
+    }
+
+    case 'memory-free': {
+      // Free up RAM immediately
+      const tasks = [
+        { name: 'Process idle tasks', cmd: 'rundll32.exe advapi32.dll,ProcessIdleTasks' },
+        { name: 'Clear standby list', cmd: 'powershell -NoProfile -Command "[System.GC]::Collect()" 2>nul' },
+        { name: 'Flush working sets', cmd: 'powershell -NoProfile -Command "Get-Process | Where-Object {$_.WorkingSet64 -gt 100MB -and $_.ProcessName -ne \'System\'} | ForEach-Object { $_.MinWorkingSet = 1MB }" 2>nul' },
+        { name: 'Clear DNS cache', cmd: 'ipconfig /flushdns' },
+        { name: 'Clear ARP cache', cmd: 'netsh interface ip delete arpcache 2>nul' },
+      ];
+      let done = 0;
+      for (const t of tasks) {
+        const r = await cmdAsync(t.cmd, 30000);
+        if (r.ok) done++;
+      }
+      const os = require('os');
+      const freeGB = (os.freemem() / 1024 / 1024 / 1024).toFixed(1);
+      return { action: 'memory-free', done, total: tasks.length, freeGB };
+    }
+
+    case 'network-optimize': {
+      // Optimize network for speed
+      const tasks = [
+        { name: 'Flush DNS', cmd: 'ipconfig /flushdns' },
+        { name: 'Reset Winsock', cmd: 'netsh winsock reset' },
+        { name: 'Reset TCP/IP stack', cmd: 'netsh int ip reset 2>nul' },
+        { name: 'Flush ARP', cmd: 'netsh interface ip delete arpcache 2>nul' },
+        { name: 'Set DNS to Cloudflare', cmd: 'netsh interface ipv4 set dns "Ethernet" static 1.1.1.1 primary 2>nul & netsh interface ipv4 add dns "Ethernet" 1.0.0.1 index=2 2>nul' },
+        { name: 'Disable auto-tuning', cmd: 'netsh int tcp set global autotuninglevel=disabled 2>nul' },
+        { name: 'Enable RSS', cmd: 'netsh int tcp set global rss=enabled 2>nul' },
+      ];
+      let done = 0;
+      for (const t of tasks) {
+        const r = await cmdAsync(t.cmd, 30000);
+        if (r.ok) done++;
+      }
+      return { action: 'network-optimize', done, total: tasks.length };
+    }
+
+    case 'privacy-lockdown': {
+      // Disable Windows telemetry and tracking
+      const tasks = [
+        { name: 'Disable telemetry', cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable advertising ID', cmd: 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo" /v Enabled /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable activity history', cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System" /v EnableActivityFeed /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable location tracking', cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors" /v DisableLocation /t REG_DWORD /d 1 /f 2>nul' },
+        { name: 'Disable feedback', cmd: 'reg add "HKCU\\Software\\Microsoft\\Siuf\\Rules" /v NumberOfSIUFInPeriod /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable WiFi Sense', cmd: 'reg add "HKLM\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\config" /v AutoConnectAllowedOEM /t REG_DWORD /d 0 /f 2>nul' },
+        { name: 'Disable diagnostic data', cmd: 'sc config DiagTrack start= disabled & net stop DiagTrack 2>nul' },
+        { name: 'Disable compatibility telemetry', cmd: 'schtasks /Change /TN "\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser" /Disable 2>nul' },
+      ];
+      let done = 0;
+      for (const t of tasks) {
+        const r = await cmdAsync(t.cmd, 30000);
+        if (r.ok) done++;
+      }
+      return { action: 'privacy-lockdown', done, total: tasks.length };
+    }
+
     default:
       return { action: command, error: 'Unknown command' };
   }
