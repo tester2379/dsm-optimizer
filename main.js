@@ -22,13 +22,12 @@ if (!_isAdmin && !process.argv.includes('--no-admin')) {
   // Try to relaunch as admin (UAC prompt)
   try {
     const electronExe = process.execPath;
-    const appPath = path.resolve(__dirname);
-    const psCmd = `Start-Process -FilePath '${electronExe.replace(/'/g, "''")}' -ArgumentList '${appPath.replace(/'/g, "''")}','--no-admin' -Verb RunAs`;
+    // For installed apps, just relaunch the exe. For dev, pass app path.
+    const args = electronExe.includes('electron') ? `'${path.resolve(__dirname).replace(/'/g, "''")}','--no-admin'` : "'--no-admin'";
+    const psCmd = `Start-Process -FilePath '${electronExe.replace(/'/g, "''")}' -ArgumentList ${args} -Verb RunAs`;
     execSync(`powershell -Command "${psCmd}"`, { stdio: 'ignore', timeout: 10000 });
-    // Elevated instance launched — exit this one
     process.exit(0);
   } catch {
-    // UAC denied or failed — continue without admin
     console.log('Admin elevation skipped — running without admin rights.');
   }
 }
@@ -819,7 +818,7 @@ const apiServer = httpServer.createServer(async (req, res) => {
         try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
         info.maxPerformance = config.maxPerformance || false;
         info.deviceName = config.deviceName || 'Unnamed';
-        info.version = '1.2.0';
+        info.version = '1.3.0';
         info.admin = _isAdmin;
         info.uptime = process.uptime();
         info.memory = Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB';
@@ -1350,7 +1349,7 @@ async function getHealthData() {
   let config = {};
   try { config = JSON.parse(fs.readFileSync(PERSISTENT_CONFIG, 'utf8')); } catch {}
   info.deviceName = config.deviceName || require('os').hostname();
-  info.version = '1.2.0';
+  info.version = '1.3.0';
   info.maxPerformance = config.maxPerformance || false;
   info.ip = getLocalIP();
   info.port = API_PORT;
