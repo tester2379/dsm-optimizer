@@ -1265,7 +1265,7 @@ try {
 // ── Cloud Relay — push/pull health via jsonblob.com (no port forwarding) ────
 // ══════════════════════════════════════════════════════════════════════════════
 
-const CLOUD_RELAY_URL = 'https://jsonblob.com/api/jsonBlob/019d882d-4b23-714f-aa07-8ae615277b49';
+const CLOUD_RELAY_URL = 'https://jsonblob.com/api/jsonBlob/019d8d88-93cd-7202-8da1-a57cbb2d41ec';
 const CLOUD_RELAY_INTERVAL = 60000; // push every 60s
 
 async function cloudRelayPush() {
